@@ -76,9 +76,28 @@ def apply_custom_theme():
                 radial-gradient(900px 500px at 110% 10%, rgba(236,72,153,0.06), transparent 55%),
                 var(--canvas);
         }
-        header[data-testid="stHeader"] { display: none; }
-        div[data-testid="stToolbar"] { display: none; }
-        #MainMenu { visibility: hidden; }
+        /* Keep stHeader mounted so the sidebar collapse/expand arrow
+           (which Streamlit renders inside the header) stays visible.
+           We just make the header bar itself blend into the page. */
+        header[data-testid="stHeader"] {
+            background: transparent !important;
+            box-shadow: none !important;
+        }
+        header[data-testid="stHeader"]::before { display: none !important; }
+        div[data-testid="stToolbar"] { display: none !important; }
+        #MainMenu { visibility: hidden !important; }
+        div[data-testid="stDecoration"] { display: none !important; }
+        /* Make sure the collapse/expand chevron is never hidden and sits
+           above the page's gradient background. */
+        button[data-testid="stSidebarCollapseButton"],
+        button[data-testid="stSidebarCollapsedControl"],
+        button[data-testid="collapsedControl"] {
+            display: inline-flex !important;
+            visibility: visible !important;
+            opacity: 1 !important;
+            color: var(--ink-700) !important;
+            z-index: 1000;
+        }
         .block-container {
             max-width: 1280px;
             padding-top: 1.0rem;
@@ -653,13 +672,26 @@ def page_data_explorer(df):
     years = sorted(pd.to_datetime(df["date"]).dt.year.dropna().unique().tolist())
     artists = sorted(df["primary_artist"].dropna().astype(str).unique().tolist())
 
+    if "explorer_year" not in st.session_state:
+        st.session_state.explorer_year = "All"
+    if "explorer_artist" not in st.session_state:
+        st.session_state.explorer_artist = "All"
+
+    def _reset_explorer_filters():
+        st.session_state.explorer_year = "All"
+        st.session_state.explorer_artist = "All"
+
     c1, c2, c3 = st.columns([1, 1, 0.8])
-    year = c1.selectbox("Year", options=["All"] + years)
-    artist = c2.selectbox("Artist", options=["All"] + artists[:200])
+    year = c1.selectbox("Year", options=["All"] + years, key="explorer_year")
+    artist = c2.selectbox(
+        "Artist", options=["All"] + artists[:200], key="explorer_artist"
+    )
     c3.markdown("<div style='height: 1.9rem;'></div>", unsafe_allow_html=True)
-    if c3.button("Reset Filters", use_container_width=True):
-        year = "All"
-        artist = "All"
+    c3.button(
+        "Reset Filters",
+        use_container_width=True,
+        on_click=_reset_explorer_filters,
+    )
 
     filtered = df.copy()
     if year != "All":
