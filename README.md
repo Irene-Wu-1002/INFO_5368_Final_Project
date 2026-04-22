@@ -11,7 +11,12 @@ Top 50, using audio and artist features. Built from scratch with **NumPy only**
 
 ## Quick Start
 
+Use **Python 3.11** and install into a fresh virtual environment so every
+teammate's app looks identical:
+
 ```bash
+python3.11 -m venv .venv
+source .venv/bin/activate       # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 streamlit run app/streamlit_app.py
 ```
@@ -25,7 +30,9 @@ The app opens at `http://localhost:8501`. Pre-trained weights ship in
 python src/train.py
 ```
 
-Need Python **3.10+**. Works on macOS, Linux, Windows.
+Python **3.11** is pinned via `runtime.txt` / `.python-version` so local,
+teammate, and Streamlit Cloud deployments all get the same chrome, icons, and
+Plotly rendering.
 
 ---
 
@@ -89,6 +96,20 @@ K_FOLDS=2 python src/train.py
 
 **Import error on `utils.data`?** Run from the project root so the `src/`
 imports resolve correctly.
+
+**Icons or layout look different from a teammate's?** You're almost certainly
+on different Streamlit / Python versions. Reinstall into a clean venv:
+
+```bash
+deactivate 2>/dev/null
+rm -rf .venv
+python3.11 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+On **Streamlit Community Cloud**, open the app's *Settings → Advanced* and
+set the Python version to **3.11** to match `runtime.txt`.
 
 ---
 
