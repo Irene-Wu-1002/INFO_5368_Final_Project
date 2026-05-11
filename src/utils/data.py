@@ -54,6 +54,71 @@ def iqr_cap_outliers(X: np.ndarray, k: float = 1.5):
     return np.clip(X, lower, upper)
 
 
+def iqr_cap_outliers_train_apply(X_train: np.ndarray, *others: np.ndarray, k: float = 1.5):
+    """Fit Tukey IQR bounds on ``X_train`` only, then clip ``X_train`` and each array in ``others``."""
+    q1 = np.percentile(X_train, 25, axis=0)
+    q3 = np.percentile(X_train, 75, axis=0)
+    iqr = q3 - q1
+    lower = q1 - k * iqr
+    upper = q3 + k * iqr
+    clipped_train = np.clip(X_train, lower, upper)
+    clipped_others = tuple(np.clip(X, lower, upper) for X in others)
+    return (clipped_train,) + clipped_others
+
+
+def artist_stratified_kfold_indices(artists: np.ndarray, k: int = 5, seed: int = 42):
+    """K-fold splits by ``primary_artist``: test folds contain only artists not seen in train.
+
+    ``artists`` must have one entry per row (same length as the feature matrix / dataframe).
+    """
+    rng = np.random.default_rng(seed)
+    unique = np.unique(artists)
+    rng.shuffle(unique)
+    if len(unique) < k:
+        raise ValueError(f"Need at least k={k} distinct artists, got {len(unique)}")
+    groups = np.array_split(unique, k)
+    folds = []
+    for i in range(k):
+        test_artists = groups[i]
+        mask_test = np.isin(artists, test_artists)
+        test_idx = np.where(mask_test)[0]
+        train_idx = np.where(~mask_test)[0]
+        rng.shuffle(train_idx)
+        rng.shuffle(test_idx)
+        folds.append((train_idx, test_idx))
+    return folds
+
+
+def prepare_xy_artist_fold(
+    train_fit_df: pd.DataFrame,
+    train_val_df: pd.DataFrame,
+    test_df: pd.DataFrame,
+    feature_cols: list,
+    cap_outliers: bool = True,
+):
+    """IQR + min-max fit on ``train_fit_df`` features only; applied to val, full train concat, and test."""
+    X_tf = train_fit_df[feature_cols].to_numpy(dtype=float)
+    X_tv = train_val_df[feature_cols].to_numpy(dtype=float)
+    X_tr = np.vstack([X_tf, X_tv])
+    X_te = test_df[feature_cols].to_numpy(dtype=float)
+    y_tf = train_fit_df["hit"].to_numpy(dtype=float)
+    y_tv = train_val_df["hit"].to_numpy(dtype=float)
+    y_train = np.concatenate([y_tf, y_tv])
+    y_test = test_df["hit"].to_numpy(dtype=float)
+
+    if cap_outliers:
+        X_tf_c, X_tv_c, X_te_c = iqr_cap_outliers_train_apply(X_tf, X_tv, X_te, k=1.5)
+        X_tr_c = np.vstack([X_tf_c, X_tv_c])
+    else:
+        X_tf_c, X_tv_c, X_tr_c, X_te_c = X_tf, X_tv, X_tr, X_te
+
+    x_min, _, span = _min_max_scale_fit(X_tf_c)
+    X_train = min_max_scale_apply(X_tr_c, x_min, span)
+    X_val = min_max_scale_apply(X_tv_c, x_min, span)
+    X_test = min_max_scale_apply(X_te_c, x_min, span)
+    return X_train, y_train, X_val, y_tv, X_test, y_test
+
+
 def random_oversample(X: np.ndarray, y: np.ndarray, seed: int = 42):
     """Random oversampling of the minority class (proposal §5 Risk: Class Imbalance).
 
@@ -94,6 +159,23 @@ def stratified_kfold_indices(y: np.ndarray, k: int = 5, seed: int = 42):
         rng.shuffle(train_idx)
         folds.append((train_idx, val_idx))
     return folds
+
+
+def stratified_fit_val_indices(y: np.ndarray, val_ratio: float = 0.15, seed: int = 42):
+    """Row indices for a stratified holdout of ``y`` into (fit, val); indices in 0..len(y)-1."""
+    rng = np.random.default_rng(seed)
+    y = np.asarray(y)
+    idx_pos = np.where(y == 1)[0]
+    idx_neg = np.where(y == 0)[0]
+    rng.shuffle(idx_pos)
+    rng.shuffle(idx_neg)
+    n_val_pos = max(1, int(len(idx_pos) * val_ratio))
+    n_val_neg = max(1, int(len(idx_neg) * val_ratio))
+    val_idx = np.concatenate([idx_pos[:n_val_pos], idx_neg[:n_val_neg]])
+    fit_idx = np.concatenate([idx_pos[n_val_pos:], idx_neg[n_val_neg:]])
+    rng.shuffle(val_idx)
+    rng.shuffle(fit_idx)
+    return fit_idx, val_idx
 
 
 def _stratified_split(X: np.ndarray, y: np.ndarray, test_ratio=0.2, seed=42):
