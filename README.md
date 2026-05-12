@@ -49,8 +49,12 @@ A 3-page Streamlit dashboard:
    comparison; **Production** stays deployable (12 features only).
 2. **Data Explorer** — histogram, scatter, correlation heatmap, genre
    breakdown. Filter by year/artist.
-3. **Model Comparison** — production metrics / ROC; plus benchmark table / ROC
-   when trained. Grid-search params and temporal split results.
+3. **Model Comparison** — Accuracy / F1 / AUC-ROC table, ROC curves, grid
+   search best params, temporal split results.
+4. **Experiments notebook** (`notebooks/experiments.ipynb`) — reproduces every
+   table and headline number reported in the final paper. Loads saved metrics
+   from `artifacts/` and optionally re-runs the full pipeline. See
+   "Reproducing the Experiments" below.
 
 ---
 
@@ -59,6 +63,7 @@ A 3-page Streamlit dashboard:
 ```
 .
 ├── app/streamlit_app.py        # the dashboard
+├── notebooks/experiments.ipynb # reproduces the tables in the report
 ├── src/
 │   ├── train.py                # training pipeline (+ benchmark models)
 │   ├── eval_artist_stratified.py  # held-out-artist K-fold eval (optional)
@@ -99,6 +104,46 @@ Speed things up for a quick demo:
 ```bash
 K_FOLDS=2 python src/train.py
 ```
+
+---
+
+## Reproducing the Experiments
+
+The notebook `notebooks/experiments.ipynb` is the entry point for graders who
+want to verify the numbers in the final report. It loads saved metrics from
+`artifacts/metrics.json` and `artifacts/ablation_metrics.json` and renders the
+four tables that appear in the paper:
+
+| Notebook section | Reproduces | Source script |
+|---|---|---|
+| §2 — Tables I, II, III | Stratified 80/20 split · 2025 temporal split · chart-context benchmark | `src/train.py` |
+| §3 — Table IV | Feature-block ablation (full / audio-only / artist-only) | `src/eval_ablation.py` |
+| §5 — Artist-stratified evaluation | 5-fold CV grouped by `primary_artist` | `src/eval_artist_stratified.py` |
+
+Open and run:
+
+```bash
+jupyter notebook notebooks/experiments.ipynb
+```
+
+Run all cells from a fresh kernel started at the **repo root**, not from inside
+`notebooks/`. The first few cells load the saved JSON artifacts and print the
+tables — no retraining required.
+
+To regenerate every artifact from scratch (5–15 min on a laptop), either
+uncomment the optional cell in §4 of the notebook, or run from the command
+line:
+
+```bash
+python src/train.py                                              # Tables I, II, III + weights
+python src/eval_ablation.py --out-json artifacts/ablation_metrics.json  # Table IV
+python src/eval_artist_stratified.py --k 5                       # §III.D paragraph
+```
+
+> ⚠️ Re-running `src/train.py` overwrites the `.npz` weights and
+> `metrics.json`. ANN training is stochastic (mini-batch shuffling, dropout,
+> He init), so fresh numbers will land within roughly ±0.05 AUC of the values
+> reported in the paper but will not match to four decimals.
 
 ---
 
