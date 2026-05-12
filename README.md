@@ -1,11 +1,12 @@
 # Song Intelligence — Spotify Hit Predictor
 
 Predict whether a song will reach the **Top 10** of the Spotify Weekly Global
-Top 50, using audio and artist features. Built from scratch with **NumPy only**
-— no scikit-learn, PyTorch, or TensorFlow.
+Top 50, using audio and artist features. Models are implemented from scratch
+with **NumPy** (and **Pandas** for CSV / preprocessing)—no scikit-learn,
+PyTorch, or TensorFlow training APIs.
 
 > INFO 5368 · PAML Final Project
-> Zoe Tseng · Jay Huang · Charlotte Lin · Irene Wu · Jessica Hsiao
+> Charlotte Lin · Irene Wu · Jay Huang · Jessica Hsiao · Zoe Tseng
 
 ---
 
@@ -22,9 +23,11 @@ streamlit run app/streamlit_app.py
 ```
 
 The app opens at `http://localhost:8501`. Pre-trained weights ship in
-`artifacts/`, so no training is required to try the dashboard.
+`artifacts/` (production and optional **benchmark** `*_benchmark.npz` /
+`scaler_config_benchmark.json`), so no training is required to try the
+dashboard.
 
-**To retrain from scratch** (~4 min):
+**To retrain from scratch** (several minutes; longer with full 5-fold CV):
 
 ```bash
 python src/train.py
@@ -40,12 +43,14 @@ Plotly rendering.
 
 A 3-page Streamlit dashboard:
 
-1. **Song Hit Predictor** — input audio + artist features → hit probability,
-   Top-10 verdict, and feature importance.
+1. **Song Hit Predictor** — audio + artist features → hit probability,
+   Top-10 verdict, and feature importance. Optional **Benchmark** mode (when
+   artifacts exist) adds **streams** and **weeks on chart** for a leakage
+   comparison; **Production** stays deployable (12 features only).
 2. **Data Explorer** — histogram, scatter, correlation heatmap, genre
    breakdown. Filter by year/artist.
-3. **Model Comparison** — Accuracy / F1 / AUC-ROC table, ROC curves, grid
-   search best params, temporal split results.
+3. **Model Comparison** — production metrics / ROC; plus benchmark table / ROC
+   when trained. Grid-search params and temporal split results.
 
 ---
 
@@ -55,11 +60,14 @@ A 3-page Streamlit dashboard:
 .
 ├── app/streamlit_app.py        # the dashboard
 ├── src/
-│   ├── train.py                # training pipeline
+│   ├── train.py                # training pipeline (+ benchmark models)
+│   ├── eval_artist_stratified.py  # held-out-artist K-fold eval (optional)
+│   ├── eval_ablation.py        # audio-only vs artist-only vs full (optional)
 │   ├── models/                 # LR + ANN (from scratch, NumPy)
 │   └── utils/                  # data prep, k-fold CV, metrics
 ├── data/                       # Spotify Top-50 dataset (CSV)
-├── artifacts/                  # .npz weights + JSON metadata
+├── artifacts/                  # .npz weights, scalers, metrics.json;
+│                               # optional: *_benchmark.*, ablation_metrics.json
 ├── .streamlit/config.toml      # forces light theme for everyone
 └── requirements.txt
 ```
@@ -68,14 +76,23 @@ A 3-page Streamlit dashboard:
 
 ## Training (optional)
 
-`python src/train.py` runs six phases with live progress bars:
+`python src/train.py` runs seven phases with live progress bars:
 
 1. Load data → drop nulls → IQR-cap outliers → min-max scale → 80/20 split
 2. Logistic Regression grid search (5-fold stratified CV)
 3. ANN grid search (5-fold stratified CV)
-4. Final model training with early stopping
-5. Temporal evaluation (train pre-2025 / test 2025+)
-6. Save `.npz` weights + `metrics.json`
+4. Final **production** models (12 features) with early stopping
+5. **Benchmark** models (+ `streams`, `weeks_on_chart`) for leakage study
+6. Temporal evaluation (train pre-2025 / test 2025+)
+7. Save production + benchmark `.npz` weights, scalers, and `metrics.json`
+
+**Other offline eval (optional, does not change deployed weights):**
+
+```bash
+python src/eval_artist_stratified.py   # K-fold by primary artist
+python src/eval_ablation.py            # audio vs artist feature blocks
+python src/eval_ablation.py --out-json artifacts/ablation_metrics.json
+```
 
 Speed things up for a quick demo:
 
