@@ -20,6 +20,10 @@ FEATURE_COLUMNS = [
     "monthly_listeners",
 ]
 
+# Chart-derived inputs for leakage / upper-bound experiments only (not production).
+CHART_CONTEXT_FEATURES = ["streams", "weeks_on_chart"]
+FEATURE_COLUMNS_BENCHMARK = FEATURE_COLUMNS + CHART_CONTEXT_FEATURES
+
 
 @dataclass
 class PreparedData:
@@ -221,6 +225,39 @@ def load_and_prepare_data(csv_path: str, test_ratio=0.2, seed=42, cap_outliers: 
         X_test=X_test,
         y_test=y_test,
         feature_names=FEATURE_COLUMNS,
+        scaler=scaler,
+        target_name="hit",
+        full_df=df,
+    )
+
+
+def load_and_prepare_benchmark_data(
+    csv_path: str, test_ratio: float = 0.2, seed: int = 42, cap_outliers: bool = True
+) -> PreparedData:
+    """Same pipeline as production, plus ``streams`` and ``weeks_on_chart`` (chart leakage risk)."""
+    df = pd.read_csv(csv_path)
+    df["hit"] = (df["rank"] <= 10).astype(int)
+    cols = FEATURE_COLUMNS_BENCHMARK
+    df = df.dropna(subset=cols + ["hit"]).copy()
+
+    X_raw = df[cols].to_numpy(dtype=float)
+    y = df["hit"].to_numpy(dtype=float)
+
+    if cap_outliers:
+        X_raw = iqr_cap_outliers(X_raw, k=1.5)
+
+    x_min, x_max, span = _min_max_scale_fit(X_raw)
+    X = min_max_scale_apply(X_raw, x_min, span)
+    X_train, y_train, X_test, y_test = _stratified_split(X, y, test_ratio=test_ratio, seed=seed)
+
+    scaler = {"min": x_min.tolist(), "max": x_max.tolist(), "span": span.tolist()}
+
+    return PreparedData(
+        X_train=X_train,
+        y_train=y_train,
+        X_test=X_test,
+        y_test=y_test,
+        feature_names=list(cols),
         scaler=scaler,
         target_name="hit",
         full_df=df,

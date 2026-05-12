@@ -433,7 +433,12 @@ def load_configs():
         scaler_cfg = json.load(f)
     with open(ARTIFACTS_PATH / "metrics.json", "r", encoding="utf-8") as f:
         metrics = json.load(f)
-    return scaler_cfg, metrics
+    bench_path = ARTIFACTS_PATH / "scaler_config_benchmark.json"
+    bench_scaler = None
+    if bench_path.is_file():
+        with open(bench_path, "r", encoding="utf-8") as f:
+            bench_scaler = json.load(f)
+    return scaler_cfg, metrics, bench_scaler
 
 
 @st.cache_resource
@@ -441,6 +446,24 @@ def load_weights():
     with np.load(ARTIFACTS_PATH / "logistic_regression_weights.npz") as lr_npz:
         lr = {"w": lr_npz["w"], "b": lr_npz["b"]}
     with np.load(ARTIFACTS_PATH / "ann_weights.npz") as ann_npz:
+        ann = {
+            "W1": ann_npz["W1"],
+            "b1": ann_npz["b1"],
+            "W2": ann_npz["W2"],
+            "b2": ann_npz["b2"],
+        }
+    return lr, ann
+
+
+@st.cache_resource
+def load_weights_benchmark():
+    lr_p = ARTIFACTS_PATH / "logistic_regression_weights_benchmark.npz"
+    ann_p = ARTIFACTS_PATH / "ann_weights_benchmark.npz"
+    if not lr_p.is_file() or not ann_p.is_file():
+        return None
+    with np.load(lr_p) as lr_npz:
+        lr = {"w": lr_npz["w"], "b": lr_npz["b"]}
+    with np.load(ann_p) as ann_npz:
         ann = {
             "W1": ann_npz["W1"],
             "b1": ann_npz["b1"],
@@ -484,8 +507,11 @@ def render_page_header(title, subtitle):
     )
 
 
-def render_feature_importance_card(metrics, feature_names, top_n=6):
-    importance = np.array(metrics.get("logistic_feature_importance", []), dtype=float)
+def render_feature_importance_card(metrics, feature_names, top_n=6, importance_override=None):
+    if importance_override is not None:
+        importance = np.asarray(importance_override, dtype=float)
+    else:
+        importance = np.array(metrics.get("logistic_feature_importance", []), dtype=float)
     if importance.size == 0:
         return
     order = np.argsort(-importance)[:top_n]
@@ -586,7 +612,7 @@ def render_popularity_by_genre(filtered_df):
         )
 
 
-def page_hit_predictor(df, scaler_cfg, metrics, lr_weights, ann_weights):
+def page_hit_predictor(df, scaler_cfg, metrics, lr_weights, ann_weights, bench_scaler, bench_weights):
     render_page_header("Hit Predictor", "Predict whether a song will reach the top 10")
 
     feature_names = scaler_cfg["feature_names"]
@@ -594,7 +620,23 @@ def page_hit_predictor(df, scaler_cfg, metrics, lr_weights, ann_weights):
     best_model = metrics["best_model"]
     decision_threshold = float(metrics.get("decision_thresholds", {}).get(best_model, 0.5))
 
+    bench_ctx = metrics.get("benchmark_chart_context") or {}
+    bench_available = (
+        bench_scaler is not None
+        and bench_weights is not None
+        and bench_ctx.get("logistic_regression")
+        and bench_ctx.get("ann")
+    )
+    bench_feature_names = list(bench_scaler["feature_names"]) if bench_scaler else []
+
     defaults = df[feature_names].median(numeric_only=True).to_dict()
+    streams_lo = float(df["streams"].quantile(0.01))
+    streams_hi = float(df["streams"].quantile(0.995))
+    weeks_lo = float(max(1.0, df["weeks_on_chart"].min()))
+    weeks_hi = float(min(120.0, df["weeks_on_chart"].quantile(0.995)))
+    d_streams = float(np.clip(df["streams"].median(), streams_lo, streams_hi))
+    d_weeks = float(np.clip(df["weeks_on_chart"].median(), weeks_lo, weeks_hi))
+
     inputs = {}
     left, right = st.columns([1.1, 0.9], gap="large")
 
@@ -602,6 +644,33 @@ def page_hit_predictor(df, scaler_cfg, metrics, lr_weights, ann_weights):
         with st.container():
             st.markdown('<span id="input-card-anchor"></span>', unsafe_allow_html=True)
             st.markdown('<div class="card-title">Input Features</div>', unsafe_allow_html=True)
+
+            if bench_available:
+                variant = st.radio(
+                    "Inference variant",
+                    ["Production (audio + artist — deployable)", "Benchmark (+ streams & weeks on chart)"],
+                    horizontal=True,
+                    help=(
+                        "Production matches saved deployment weights (no chart leakage). "
+                        "Benchmark adds streams and weeks_on_chart to illustrate how chart-context "
+                        "features inflate scores versus honest pre-chart prediction."
+                    ),
+                )
+                use_benchmark = variant.startswith("Benchmark")
+            else:
+                use_benchmark = False
+                st.caption(
+                    "Benchmark weights not found. Run `python src/train.py` to generate "
+                    "`artifacts/*_benchmark.*` and refresh."
+                )
+
+            if use_benchmark:
+                st.warning(
+                    "Benchmark mode uses **streams** and **weeks on chart**. These are usually unknown "
+                    "before a song charts, so scores here are for **comparison / pedagogy** only—not "
+                    "the deployed default."
+                )
+
             with st.expander("Audio Features", expanded=True):
                 for feat in [
                     "tempo",
@@ -630,18 +699,55 @@ def page_hit_predictor(df, scaler_cfg, metrics, lr_weights, ann_weights):
                         )
                     else:
                         inputs[feat] = st.number_input("Monthly Listeners", value=default, format="%.2f")
-            with st.expander("Chart Context (Optional)", expanded=False):
-                st.number_input("Peak Rank", value=15.0, format="%.1f", disabled=True)
-                st.number_input("Weeks on Chart", value=8.0, format="%.1f", disabled=True)
-                st.markdown('<div class="soft-note">Proposal keeps these as optional context features.</div>', unsafe_allow_html=True)
+            with st.expander("Chart context (benchmark only)", expanded=use_benchmark):
+                st.caption(
+                    "**Streams** and **weeks on chart** feed the benchmark models only. "
+                    "Peak rank is not used in either saved model."
+                )
+                inputs["streams"] = st.slider(
+                    "Streams (weekly)",
+                    min_value=streams_lo,
+                    max_value=streams_hi,
+                    value=d_streams,
+                    format="%.0f",
+                    disabled=not use_benchmark,
+                )
+                inputs["weeks_on_chart"] = st.slider(
+                    "Weeks on chart",
+                    min_value=weeks_lo,
+                    max_value=weeks_hi,
+                    value=d_weeks,
+                    format="%.0f",
+                    disabled=not use_benchmark,
+                )
             predict_clicked = st.button("Predict", type="primary", use_container_width=True)
 
     if predict_clicked:
-        x = np.array([inputs[f] for f in feature_names], dtype=float)
-        x_scaled = scale_input(x, scaler)
-        lr_prob = lr_predict_proba(x_scaled, lr_weights)
-        ann_prob = ann_predict_proba(x_scaled, ann_weights)
-        final_prob = ann_prob if best_model == "ann" else lr_prob
+        if use_benchmark and not bench_available:
+            st.error("Benchmark artifacts are missing. Train with `python src/train.py` first.")
+            return
+
+        if use_benchmark:
+            lr_b, ann_b = bench_weights
+            x = np.array([inputs[f] for f in bench_feature_names], dtype=float)
+            x_scaled = scale_input(x, bench_scaler["scaler"])
+            lr_prob = lr_predict_proba(x_scaled, lr_b)
+            ann_prob = ann_predict_proba(x_scaled, ann_b)
+            best_b = bench_ctx.get("best_model", "ann")
+            decision_threshold = float(bench_ctx.get("decision_thresholds", {}).get(best_b, 0.5))
+            final_prob = ann_prob if best_b == "ann" else lr_prob
+            fi_names = bench_feature_names
+            fi_override = bench_ctx.get("logistic_feature_importance")
+            model_label = f"benchmark / {best_b}"
+        else:
+            x = np.array([inputs[f] for f in feature_names], dtype=float)
+            x_scaled = scale_input(x, scaler)
+            lr_prob = lr_predict_proba(x_scaled, lr_weights)
+            ann_prob = ann_predict_proba(x_scaled, ann_weights)
+            final_prob = ann_prob if best_model == "ann" else lr_prob
+            fi_names = feature_names
+            fi_override = None
+            model_label = f"production / {best_model}"
 
         with right:
             with st.container():
@@ -652,10 +758,10 @@ def page_hit_predictor(df, scaler_cfg, metrics, lr_weights, ann_weights):
                 label = "Top 10 Hit" if final_prob >= decision_threshold else "Not Top 10"
                 st.markdown(f'<span class="result-badge">{label}</span>', unsafe_allow_html=True)
                 st.write("")
-                st.write(f"Model used: `{best_model}`")
+                st.write(f"Variant: `{model_label}`")
                 st.write(f"Threshold: `{decision_threshold:.3f}`")
                 st.write(f"Logistic: `{lr_prob:.4f}` | ANN: `{ann_prob:.4f}`")
-            render_feature_importance_card(metrics, feature_names, top_n=6)
+            render_feature_importance_card(metrics, fi_names, top_n=8, importance_override=fi_override)
 
     else:
         with right:
@@ -793,7 +899,7 @@ def page_model_comparison(metrics):
             }
         )
     table_df = pd.DataFrame(rows)
-    st.markdown("#### Model Performance")
+    st.markdown("#### Production models (audio + artist)")
     st.dataframe(table_df, use_container_width=True, hide_index=True)
 
     fpr_lr = np.array(metrics["logistic_regression"]["fpr"])
@@ -815,7 +921,7 @@ def page_model_comparison(metrics):
                    line=dict(color="#cbd5e1", width=2, dash="dash"))
     )
     roc_fig.update_layout(
-        title="ROC Curve Comparison",
+        title="ROC — production (no chart-context inputs)",
         xaxis_title="False Positive Rate",
         yaxis_title="True Positive Rate",
         plot_bgcolor="white",
@@ -829,6 +935,53 @@ def page_model_comparison(metrics):
     )
 
     st.plotly_chart(roc_fig, use_container_width=True)
+
+    bc = metrics.get("benchmark_chart_context")
+    if bc and bc.get("logistic_regression") and bc.get("ann"):
+        st.markdown("#### Benchmark (+ streams, weeks on chart — leakage / upper bound)")
+        st.caption(bc.get("description", ""))
+        b_rows = []
+        for metric_name in ["accuracy", "f1", "auc"]:
+            b_rows.append(
+                {
+                    "Metric": metric_name.upper(),
+                    "Logistic Regression": bc["logistic_regression"][metric_name],
+                    "ANN": bc["ann"][metric_name],
+                }
+            )
+        st.dataframe(pd.DataFrame(b_rows), use_container_width=True, hide_index=True)
+
+        fpr_lrb = np.array(bc["logistic_regression"]["fpr"])
+        tpr_lrb = np.array(bc["logistic_regression"]["tpr"])
+        fpr_annb = np.array(bc["ann"]["fpr"])
+        tpr_annb = np.array(bc["ann"]["tpr"])
+        roc_b = go.Figure()
+        roc_b.add_trace(
+            go.Scatter(x=fpr_lrb, y=tpr_lrb, mode="lines", name="LR (benchmark)",
+                        line=dict(color="#6366f1", width=2, dash="dot"))
+        )
+        roc_b.add_trace(
+            go.Scatter(x=fpr_annb, y=tpr_annb, mode="lines", name="ANN (benchmark)",
+                        line=dict(color="#ec4899", width=2, dash="dot"))
+        )
+        roc_b.add_trace(
+            go.Scatter(x=[0, 1], y=[0, 1], mode="lines", name="Random",
+                       line=dict(color="#cbd5e1", width=2, dash="dash"))
+        )
+        roc_b.update_layout(
+            title="ROC — benchmark (includes chart-context features)",
+            xaxis_title="False Positive Rate",
+            yaxis_title="True Positive Rate",
+            plot_bgcolor="white",
+            paper_bgcolor="white",
+            font=dict(family="Inter, sans-serif", color="#0f172a", size=12),
+            title_font=dict(family="Plus Jakarta Sans, Inter, sans-serif", size=16, color="#0f172a"),
+            xaxis=dict(gridcolor="#e2e8f0", zerolinecolor="#e2e8f0"),
+            yaxis=dict(gridcolor="#e2e8f0", zerolinecolor="#e2e8f0"),
+            margin=dict(l=10, r=10, t=50, b=10),
+            legend=dict(bgcolor="rgba(255,255,255,0)", bordercolor="#e2e8f0", borderwidth=0),
+        )
+        st.plotly_chart(roc_b, use_container_width=True)
     c1, c2 = st.columns(2)
     with c1:
         st.markdown("**Logistic Regression**")
@@ -839,7 +992,8 @@ def page_model_comparison(metrics):
 
     st.write(f"Composite score (LR): `{metrics['composite']['logistic_regression']:.4f}`")
     st.write(f"Composite score (ANN): `{metrics['composite']['ann']:.4f}`")
-    st.success(f"Best deployed model: {metrics['best_model']}")
+    deploy = metrics.get("deployment_model", metrics["best_model"])
+    st.success(f"Best deployed model (production): `{deploy}`")
     st.caption(
         f"Class weights: pos={metrics.get('class_weights', {}).get('pos_weight', 1.0):.2f}, "
         f"neg={metrics.get('class_weights', {}).get('neg_weight', 1.0):.2f}"
@@ -899,8 +1053,9 @@ def main():
     )
 
     df = load_data()
-    scaler_cfg, metrics = load_configs()
+    scaler_cfg, metrics, bench_scaler = load_configs()
     lr_weights, ann_weights = load_weights()
+    bench_weights = load_weights_benchmark()
 
     page = st.sidebar.radio(
         "Navigate",
@@ -908,7 +1063,7 @@ def main():
     )
 
     if page == "Song Hit Predictor":
-        page_hit_predictor(df, scaler_cfg, metrics, lr_weights, ann_weights)
+        page_hit_predictor(df, scaler_cfg, metrics, lr_weights, ann_weights, bench_scaler, bench_weights)
     elif page == "Data Explorer Dashboard":
         page_data_explorer(df)
     else:

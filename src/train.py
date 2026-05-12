@@ -10,9 +10,11 @@ import numpy as np
 from models.ann import ANNClassifierScratch
 from models.logistic_regression import LogisticRegressionScratch
 from utils.data import (
+    load_and_prepare_benchmark_data,
     load_and_prepare_data,
     save_scaler,
     stratified_kfold_indices,
+    stratified_train_val_split,
     temporal_split_from_df,
 )
 from utils.metrics import (
@@ -149,7 +151,7 @@ def main():
 
     _section("Song Intelligence — Training Pipeline")
 
-    print("\n[1/6] Loading and preparing data...")
+    print("\n[1/7] Loading and preparing data...")
     prepared = load_and_prepare_data(str(csv_path), test_ratio=0.2, seed=42)
     pos_count = np.sum(prepared.y_train == 1)
     neg_count = np.sum(prepared.y_train == 0)
@@ -167,7 +169,7 @@ def main():
     k_folds = int(os.environ.get("K_FOLDS", "5"))
     print(f"  Using {k_folds}-fold stratified cross-validation for grid search.")
 
-    _section(f"[2/6] Grid Search — Logistic Regression ({k_folds}-fold CV, 4 configs)")
+    _section(f"[2/7] Grid Search — Logistic Regression ({k_folds}-fold CV, 4 configs)")
     best_lr_cfg, best_lr_threshold, lr_grid_results = grid_search_logistic(
         prepared.X_train,
         prepared.y_train,
@@ -177,7 +179,7 @@ def main():
     )
     print(f"\n  Best config: {best_lr_cfg}  threshold={best_lr_threshold:.3f}")
 
-    _section(f"[3/6] Grid Search — ANN ({k_folds}-fold CV, 4 configs)")
+    _section(f"[3/7] Grid Search — ANN ({k_folds}-fold CV, 4 configs)")
     best_ann_cfg, best_ann_threshold, ann_grid_results = grid_search_ann(
         prepared.X_train,
         prepared.y_train,
@@ -188,7 +190,7 @@ def main():
     )
     print(f"\n  Best config: {best_ann_cfg}  threshold={best_ann_threshold:.3f}")
 
-    _section("[4/6] Final Model Training on Full Train Set")
+    _section("[4/7] Final Model Training on Full Train Set (production features)")
     print("\n  Training Logistic Regression...")
     lr_model = LogisticRegressionScratch(pos_weight=pos_weight, neg_weight=neg_weight, **best_lr_cfg)
     lr_model.fit(prepared.X_train, prepared.y_train, verbose=True, early_stopping_patience=80)
@@ -211,7 +213,91 @@ def main():
     composite_ann = composite_score(ann_metrics)
     best_model_name = "ann" if composite_ann > composite_lr else "logistic_regression"
 
-    _section("[5/6] Temporal Split Evaluation")
+    _section("[5/7] Benchmark models (+ streams, weeks on chart — chart-context / leakage study)")
+    print(
+        "\n  Training separate LR/ANN on audio+artist+streams+weeks_on_chart using the same\n"
+        "  CV-selected hyperparameters as production (input_dim=14). Thresholds are tuned on\n"
+        "  a 15% stratified row holdout from benchmark training rows."
+    )
+    prepared_bench = load_and_prepare_benchmark_data(str(csv_path), test_ratio=0.2, seed=42)
+    pos_b = float(np.sum(prepared_bench.y_train == 1))
+    neg_b = float(np.sum(prepared_bench.y_train == 0))
+    pos_weight_b = neg_b / (pos_b + 1e-12)
+    print(
+        f"  Benchmark train: {len(prepared_bench.y_train)} rows, "
+        f"features={prepared_bench.X_train.shape[1]}  "
+        f"(+{', '.join(prepared_bench.feature_names[-2:])})"
+    )
+
+    Xb_tr, yb_tr, Xb_val, yb_val = stratified_train_val_split(
+        prepared_bench.X_train, prepared_bench.y_train, val_ratio=0.15, seed=101
+    )
+
+    print("\n  Benchmark Logistic Regression (threshold on val holdout)...")
+    lr_bench_cv = LogisticRegressionScratch(
+        pos_weight=pos_weight_b, neg_weight=1.0, **best_lr_cfg
+    )
+    lr_bench_cv.fit(Xb_tr, yb_tr, verbose=False, early_stopping_patience=80)
+    thr_lr_b, _ = best_threshold_by_f1(yb_val, lr_bench_cv.predict_proba(Xb_val))
+    lr_bench = LogisticRegressionScratch(pos_weight=pos_weight_b, neg_weight=1.0, **best_lr_cfg)
+    lr_bench.fit(prepared_bench.X_train, prepared_bench.y_train, verbose=True, early_stopping_patience=80)
+    lr_bench_metrics = evaluate_model(
+        lr_bench, prepared_bench.X_test, prepared_bench.y_test, threshold=thr_lr_b
+    )
+    print(
+        f"  Benchmark LR test -> acc={lr_bench_metrics['accuracy']:.3f}, "
+        f"f1={lr_bench_metrics['f1']:.3f}, auc={lr_bench_metrics['auc']:.3f}"
+    )
+
+    print("\n  Benchmark ANN...")
+    ann_bench_cv = ANNClassifierScratch(
+        input_dim=prepared_bench.X_train.shape[1],
+        seed=42,
+        pos_weight=pos_weight_b,
+        neg_weight=1.0,
+        **best_ann_cfg,
+    )
+    ann_bench_cv.fit(Xb_tr, yb_tr, verbose=False, early_stopping_patience=40)
+    thr_ann_b, _ = best_threshold_by_f1(yb_val, ann_bench_cv.predict_proba(Xb_val))
+    ann_bench = ANNClassifierScratch(
+        input_dim=prepared_bench.X_train.shape[1],
+        seed=42,
+        pos_weight=pos_weight_b,
+        neg_weight=1.0,
+        **best_ann_cfg,
+    )
+    ann_bench.fit(prepared_bench.X_train, prepared_bench.y_train, verbose=True, early_stopping_patience=50)
+    ann_bench_metrics = evaluate_model(
+        ann_bench, prepared_bench.X_test, prepared_bench.y_test, threshold=thr_ann_b
+    )
+    print(
+        f"  Benchmark ANN test -> acc={ann_bench_metrics['accuracy']:.3f}, "
+        f"f1={ann_bench_metrics['f1']:.3f}, auc={ann_bench_metrics['auc']:.3f}"
+    )
+
+    composite_lr_b = composite_score(lr_bench_metrics)
+    composite_ann_b = composite_score(ann_bench_metrics)
+    best_bench_name = "ann" if composite_ann_b > composite_lr_b else "logistic_regression"
+    lr_bench_importance = np.abs(lr_bench.w)
+    lr_bench_importance = lr_bench_importance / (np.sum(lr_bench_importance) + 1e-12)
+
+    benchmark_payload = {
+        "description": (
+            "Models trained with streams and weeks_on_chart in addition to audio and artist features. "
+            "These chart-derived inputs are strong proxies for current success and inflate apparent "
+            "performance versus production models that omit them (leakage tradeoff for pre-chart prediction)."
+        ),
+        "feature_names": prepared_bench.feature_names,
+        "logistic_regression": lr_bench_metrics,
+        "ann": ann_bench_metrics,
+        "composite": {"logistic_regression": composite_lr_b, "ann": composite_ann_b},
+        "best_model": best_bench_name,
+        "logistic_feature_importance": lr_bench_importance.tolist(),
+        "class_weights": {"pos_weight": pos_weight_b, "neg_weight": 1.0},
+        "decision_thresholds": {"logistic_regression": float(thr_lr_b), "ann": float(thr_ann_b)},
+    }
+
+    _section("[6/7] Temporal Split Evaluation")
     temporal_lr_metrics = {}
     temporal_ann_metrics = {}
     X_time_train, y_time_train, X_time_test, y_time_test = temporal_split_from_df(
@@ -253,7 +339,7 @@ def main():
     else:
         print("  Not enough data for temporal split — skipping.")
 
-    _section("[6/6] Saving Artifacts")
+    _section("[7/7] Saving Artifacts")
     np.savez(
         artifacts_dir / "logistic_regression_weights.npz",
         w=lr_model.w,
@@ -267,7 +353,20 @@ def main():
         b2=ann_model.b2,
     )
     save_scaler(artifacts_dir / "scaler_config.json", prepared.scaler, prepared.feature_names)
-    print("  Saved model weights and scaler.")
+    np.savez(
+        artifacts_dir / "logistic_regression_weights_benchmark.npz",
+        w=lr_bench.w,
+        b=np.array([lr_bench.b]),
+    )
+    np.savez(
+        artifacts_dir / "ann_weights_benchmark.npz",
+        W1=ann_bench.W1,
+        b1=ann_bench.b1,
+        W2=ann_bench.W2,
+        b2=ann_bench.b2,
+    )
+    save_scaler(artifacts_dir / "scaler_config_benchmark.json", prepared_bench.scaler, prepared_bench.feature_names)
+    print("  Saved model weights, production scaler, and benchmark artifacts.")
 
     lr_feature_importance = np.abs(lr_model.w)
     lr_feature_importance = lr_feature_importance / (np.sum(lr_feature_importance) + 1e-12)
@@ -277,6 +376,11 @@ def main():
         "ann": ann_metrics,
         "composite": {"logistic_regression": composite_lr, "ann": composite_ann},
         "best_model": best_model_name,
+        "deployment_model": best_model_name,
+        "deployment_note": (
+            "The deployed Streamlit default uses production inputs only (audio + artist). "
+            "benchmark_chart_context compares models that also use streams and weeks_on_chart."
+        ),
         "feature_names": prepared.feature_names,
         "logistic_feature_importance": lr_feature_importance.tolist(),
         "class_weights": {"pos_weight": pos_weight, "neg_weight": neg_weight},
@@ -293,6 +397,7 @@ def main():
             "logistic_regression": temporal_lr_metrics,
             "ann": temporal_ann_metrics,
         },
+        "benchmark_chart_context": benchmark_payload,
     }
 
     with open(artifacts_dir / "metrics.json", "w", encoding="utf-8") as f:
