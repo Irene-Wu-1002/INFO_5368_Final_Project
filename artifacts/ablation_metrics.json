@@ -1,0 +1,89 @@
+{
+  "csv": "/Users/hsiaoduojie/Desktop/PAML/INFO_5368_Final_Project/data/spotify_top50_songs_features.csv",
+  "test_ratio": 0.2,
+  "split_seed": 42,
+  "n_rows": 13248,
+  "n_train": 10599,
+  "n_test": 2649,
+  "hyperparams_from": "/Users/hsiaoduojie/Desktop/PAML/INFO_5368_Final_Project/artifacts/metrics.json",
+  "regimes": {
+    "full": {
+      "description": "All 12 production features",
+      "feature_names": [
+        "tempo",
+        "energy",
+        "zero_crossing_rate",
+        "spectral_centroid",
+        "spectral_rolloff",
+        "mfcc_1",
+        "mfcc_2",
+        "chroma_mean",
+        "chroma_std",
+        "primary_artist_popularity",
+        "max_artist_popularity",
+        "monthly_listeners"
+      ],
+      "input_dim": 12,
+      "logistic_regression": {
+        "accuracy": 0.4575311438278596,
+        "f1": 0.3423340961094711,
+        "auc": 0.5469902614353538,
+        "threshold": 0.4977386934673367
+      },
+      "ann": {
+        "accuracy": 0.49226123065307664,
+        "f1": 0.3911272068805755,
+        "auc": 0.6667924535003058,
+        "threshold": 0.47512562814070347
+      }
+    },
+    "audio_only": {
+      "description": "Nine audio / spectral / MFCC / chroma features",
+      "feature_names": [
+        "tempo",
+        "energy",
+        "zero_crossing_rate",
+        "spectral_centroid",
+        "spectral_rolloff",
+        "mfcc_1",
+        "mfcc_2",
+        "chroma_mean",
+        "chroma_std"
+      ],
+      "input_dim": 9,
+      "logistic_regression": {
+        "accuracy": 0.20271800679501698,
+        "f1": 0.3350125944581592,
+        "auc": 0.5237262085302994,
+        "threshold": 0.48417085427135675
+      },
+      "ann": {
+        "accuracy": 0.45224613061532654,
+        "f1": 0.3807084933841984,
+        "auc": 0.6529260089287918,
+        "threshold": 0.47060301507537683
+      }
+    },
+    "artist_only": {
+      "description": "Three artist popularity / listeners features",
+      "feature_names": [
+        "primary_artist_popularity",
+        "max_artist_popularity",
+        "monthly_listeners"
+      ],
+      "input_dim": 3,
+      "logistic_regression": {
+        "accuracy": 0.3484333710834277,
+        "f1": 0.3452200303486912,
+        "auc": 0.5461849297310339,
+        "threshold": 0.49321608040201004
+      },
+      "ann": {
+        "accuracy": 0.4246885617214043,
+        "f1": 0.35532994923822964,
+        "auc": 0.6022358387702829,
+        "threshold": 0.46608040201005024
+      }
+    }
+  }
+}

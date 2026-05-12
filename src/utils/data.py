@@ -24,6 +24,10 @@ FEATURE_COLUMNS = [
 CHART_CONTEXT_FEATURES = ["streams", "weeks_on_chart"]
 FEATURE_COLUMNS_BENCHMARK = FEATURE_COLUMNS + CHART_CONTEXT_FEATURES
 
+# Ablation subsets (aligned indices; use with the same stratified row split for all three runs).
+FEATURE_COLUMNS_AUDIO = FEATURE_COLUMNS[:9]
+FEATURE_COLUMNS_ARTIST = FEATURE_COLUMNS[9:]
+
 
 @dataclass
 class PreparedData:
@@ -68,6 +72,52 @@ def iqr_cap_outliers_train_apply(X_train: np.ndarray, *others: np.ndarray, k: fl
     clipped_train = np.clip(X_train, lower, upper)
     clipped_others = tuple(np.clip(X, lower, upper) for X in others)
     return (clipped_train,) + clipped_others
+
+
+def stratified_train_test_indices(y: np.ndarray, test_ratio: float = 0.2, seed: int = 42):
+    """Stratified train/test row indices in ``0..len(y)-1`` (same protocol as ``_stratified_split``)."""
+    rng = np.random.default_rng(seed)
+    y = np.asarray(y)
+    idx = np.arange(len(y))
+    idx_pos = idx[y == 1]
+    idx_neg = idx[y == 0]
+    rng.shuffle(idx_pos)
+    rng.shuffle(idx_neg)
+    n_test_pos = int(len(idx_pos) * test_ratio)
+    n_test_neg = int(len(idx_neg) * test_ratio)
+    test_idx = np.concatenate([idx_pos[:n_test_pos], idx_neg[:n_test_neg]])
+    train_idx = np.concatenate([idx_pos[n_test_pos:], idx_neg[n_test_neg:]])
+    rng.shuffle(test_idx)
+    rng.shuffle(train_idx)
+    return train_idx, test_idx
+
+
+def prepare_xy_ablation(
+    df: pd.DataFrame,
+    feature_cols: list,
+    train_idx: np.ndarray,
+    test_idx: np.ndarray,
+    cap_outliers: bool = True,
+):
+    """IQR fit on train rows only; min-max fit on clipped train; apply to test.
+
+    Use the same ``train_idx`` / ``test_idx`` for each feature-column subset so ablations
+    are comparable on identical rows.
+    """
+    X_raw = df[feature_cols].to_numpy(dtype=float)
+    y = df["hit"].to_numpy(dtype=float)
+    X_tr = X_raw[train_idx]
+    X_te = X_raw[test_idx]
+    y_tr = y[train_idx]
+    y_te = y[test_idx]
+    if cap_outliers:
+        X_tr_c, X_te_c = iqr_cap_outliers_train_apply(X_tr, X_te, k=1.5)
+    else:
+        X_tr_c, X_te_c = X_tr, X_te
+    x_min, _, span = _min_max_scale_fit(X_tr_c)
+    X_train = min_max_scale_apply(X_tr_c, x_min, span)
+    X_test = min_max_scale_apply(X_te_c, x_min, span)
+    return X_train, y_tr, X_test, y_te
 
 
 def artist_stratified_kfold_indices(artists: np.ndarray, k: int = 5, seed: int = 42):
