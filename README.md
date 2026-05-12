@@ -22,7 +22,11 @@ pip install -r requirements.txt
 streamlit run app/streamlit_app.py
 ```
 
-The app opens at `http://localhost:8501`. Pre-trained weights ship in
+The deployed app is live at **https://paml-project-deployment.onrender.com/**.
+> If anything looks wrong or the page fails to load, do a hard reload:
+> **Mac:** `Cmd + Shift + R` · **Windows/Linux:** `Ctrl + Shift + R`
+
+The app opens at `http://localhost:8501` when run locally. Pre-trained weights ship in
 `artifacts/` (production and optional **benchmark** `*_benchmark.npz` /
 `scaler_config_benchmark.json`), so no training is required to try the
 dashboard.
@@ -149,11 +153,15 @@ python src/eval_artist_stratified.py --k 5                       # §III.D parag
 
 ## Troubleshooting
 
+**Something looks wrong or the page won't load?** Do a hard reload first — it fixes most transient issues:
+- **Mac:** `Cmd + Shift + R`
+- **Windows/Linux:** `Ctrl + Shift + R`
+
 **UI looks dark or broken?** The app ships with `.streamlit/config.toml` and a
 `darkreader-lock` tag to force light mode for everyone. If it still looks off:
 
 - Make sure the hidden `.streamlit/` folder is present.
-- Hard refresh (`Cmd/Ctrl + Shift + R`).
+- Hard refresh (`Cmd + Shift + R` / `Ctrl + Shift + R`).
 - Disable "Dark Reader" or similar browser extensions for this site.
 
 **Import error on `utils.data`?** Run from the project root so the `src/`
